@@ -96,4 +96,23 @@ namespace TimeWeave.Backend.Database
         
         public DateTime RunAt { get; set; } = DateTime.UtcNow;
     }
+
+    public class OperationLog
+    {
+        [Key]
+        public Guid Id { get; set; }
+        
+        public Guid SessionId { get; set; }
+        
+        public DateTime Timestamp { get; set; } = DateTime.UtcNow;
+        
+        [MaxLength(20)]
+        public string Level { get; set; } = "INFO"; // INFO, SUCCESS, WARNING, ERROR
+        
+        [MaxLength(50)]
+        public string Source { get; set; } = "Scenario"; // Dynatrace, Gemini, OTel, Gateway, Scenario
+        
+        [Required]
+        public string Message { get; set; } = string.Empty;
+    }
 }

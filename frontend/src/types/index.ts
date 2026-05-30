@@ -42,3 +42,12 @@ export interface NodePosition {
   x: number;
   y: number;
 }
+
+export interface OperationLog {
+  id: string;
+  sessionId: string;
+  timestamp: string;
+  level: string; // INFO, SUCCESS, WARNING, ERROR
+  source: string; // Dynatrace, Gemini, OTel, Gateway, Scenario, Redis
+  message: string;
+}

@@ -53,6 +53,7 @@ builder.Services.AddSingleton<DynatraceService>();
 builder.Services.AddScoped<GeminiService>();
 builder.Services.AddScoped<ScenarioService>();
 builder.Services.AddSingleton<TelemetryIngestionService>();
+builder.Services.AddSingleton<LogService>();
 
 // Register Redis Stream Service (both as singleton and hosted background worker)
 builder.Services.AddSingleton<RedisStreamService>();
@@ -73,6 +74,28 @@ using (var scope = app.Services.CreateScope())
         var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
         Console.WriteLine("[Database] Ensuring database and tables exist...");
         await db.Database.EnsureCreatedAsync();
+        
+        // Execute raw SQL to create OperationLogs table if it doesn't exist
+        try
+        {
+            var createTableSql = @"
+                CREATE TABLE IF NOT EXISTS ""OperationLogs"" (
+                    ""Id"" UUID PRIMARY KEY,
+                    ""SessionId"" UUID NOT NULL,
+                    ""Timestamp"" TIMESTAMP WITH TIME ZONE NOT NULL,
+                    ""Level"" VARCHAR(20) NOT NULL,
+                    ""Source"" VARCHAR(50) NOT NULL,
+                    ""Message"" TEXT NOT NULL
+                );
+                CREATE INDEX IF NOT EXISTS ""IX_OperationLogs_SessionId"" ON ""OperationLogs"" (""SessionId"");";
+            await db.Database.ExecuteSqlRawAsync(createTableSql);
+            Console.WriteLine("[Database] OperationLogs table verified/created.");
+        }
+        catch (Exception sqlEx)
+        {
+            Console.WriteLine($"[Database] Error verifying/creating OperationLogs table: {sqlEx.Message}");
+        }
+
         Console.WriteLine("[Database] Database initialized successfully.");
     }
     catch (Exception ex)
@@ -120,6 +143,16 @@ app.MapGet("/api/sessions/{id}/spans", async (Guid id, AppDbContext db) =>
         .OrderBy(s => s.StartTimeUnixNano)
         .ToListAsync();
     return Results.Ok(spans);
+});
+
+// Fetch background logs for a replay session
+app.MapGet("/api/sessions/{id}/logs", async (Guid id, AppDbContext db) =>
+{
+    var logs = await db.OperationLogs
+        .Where(l => l.SessionId == id)
+        .OrderBy(l => l.Timestamp)
+        .ToListAsync();
+    return Results.Ok(logs);
 });
 
 // Trigger Gemini root-cause analysis report

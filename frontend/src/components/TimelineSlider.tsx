@@ -15,43 +15,76 @@ export const TimelineSlider = () => {
   const playDurationMs = 15000; // 15 seconds to play from start to finish
   const totalSimulatedTimeNano = maxTime - minTime;
 
+  const accumulatedTimeRef = useRef<number>(0);
+
+  // Keep refs of values accessed by the loop to avoid resetting requestAnimationFrame every frame
+  const isPlayingRef = useRef(isPlaying);
+  const currentTimeRef = useRef(currentTime);
+
   useEffect(() => {
-    if (isPlaying) {
-      if (currentTime >= maxTime && maxTime > 0) {
-        // If at end, loop back
-        setCurrentTime(minTime);
-      }
+    isPlayingRef.current = isPlaying;
+  }, [isPlaying]);
 
-      const animate = (time: number) => {
-        if (!lastUpdateRef.current) lastUpdateRef.current = time;
-        const deltaMs = time - lastUpdateRef.current;
-        lastUpdateRef.current = time;
+  useEffect(() => {
+    currentTimeRef.current = currentTime;
+  }, [currentTime]);
 
-        const nanoPerMs = totalSimulatedTimeNano / playDurationMs;
-        const stepNano = deltaMs * nanoPerMs;
+  useEffect(() => {
+    if (!isPlaying) {
+      lastUpdateRef.current = null;
+      accumulatedTimeRef.current = 0;
+      if (reqRef.current) cancelAnimationFrame(reqRef.current);
+      return;
+    }
 
+    // Reset loop if at the end
+    if (currentTimeRef.current >= maxTime && maxTime > 0) {
+      setCurrentTime(minTime);
+    }
+
+    let lastRenderTime = 0;
+
+    const animate = (time: number) => {
+      if (!isPlayingRef.current) return;
+
+      if (!lastUpdateRef.current) lastUpdateRef.current = time;
+      const deltaMs = time - lastUpdateRef.current;
+      lastUpdateRef.current = time;
+
+      const nanoPerMs = totalSimulatedTimeNano / playDurationMs;
+      const stepNano = deltaMs * nanoPerMs;
+
+      accumulatedTimeRef.current += stepNano;
+
+      // Throttle: only update state every 33ms (30fps) to prevent paint overloading
+      if (time - lastRenderTime >= 33) {
         setCurrentTime((prev: number) => {
-          const next = prev + stepNano;
+          const next = prev + accumulatedTimeRef.current;
+          accumulatedTimeRef.current = 0;
           if (next >= maxTime) {
-            setIsPlaying(false);
             return maxTime;
           }
           return next;
         });
-
-        reqRef.current = requestAnimationFrame(animate);
-      };
+        lastRenderTime = time;
+      }
 
       reqRef.current = requestAnimationFrame(animate);
-    } else {
-      lastUpdateRef.current = null;
-      if (reqRef.current) cancelAnimationFrame(reqRef.current);
-    }
+    };
+
+    reqRef.current = requestAnimationFrame(animate);
 
     return () => {
       if (reqRef.current) cancelAnimationFrame(reqRef.current);
     };
-  }, [isPlaying, maxTime, minTime, totalSimulatedTimeNano, setCurrentTime, currentTime]);
+  }, [isPlaying, maxTime, minTime, totalSimulatedTimeNano, setCurrentTime]);
+
+  // Auto-stop when playhead reaches maxTime
+  useEffect(() => {
+    if (currentTime >= maxTime && isPlaying) {
+      setIsPlaying(false);
+    }
+  }, [currentTime, maxTime, isPlaying]);
 
   if (spans.length === 0) {
     return (

@@ -1,4 +1,4 @@
-import { ReplaySession, SimulationResult, TelemetrySpan } from '../types';
+import { ReplaySession, SimulationResult, TelemetrySpan, OperationLog } from '../types';
 
 const API_BASE_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:5000';
 
@@ -42,6 +42,12 @@ export const api = {
   getSimulationResults: async (sessionId: string): Promise<SimulationResult[]> => {
     const res = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/simulation-results`);
     if (!res.ok) throw new Error('Failed to fetch simulation results');
+    return res.json();
+  },
+
+  getSessionLogs: async (sessionId: string): Promise<OperationLog[]> => {
+    const res = await fetch(`${API_BASE_URL}/api/sessions/${sessionId}/logs`);
+    if (!res.ok) throw new Error('Failed to fetch session logs');
     return res.json();
   }
 };

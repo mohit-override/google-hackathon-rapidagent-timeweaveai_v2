@@ -11,6 +11,7 @@ namespace TimeWeave.Backend.Database
         public DbSet<ReplaySession> ReplaySessions => Set<ReplaySession>();
         public DbSet<TelemetrySpan> TelemetrySpans => Set<TelemetrySpan>();
         public DbSet<SimulationResult> SimulationResults => Set<SimulationResult>();
+        public DbSet<OperationLog> OperationLogs => Set<OperationLog>();
         
         protected override void OnModelCreating(ModelBuilder modelBuilder)
         {
@@ -22,6 +23,9 @@ namespace TimeWeave.Backend.Database
                 
             modelBuilder.Entity<SimulationResult>()
                 .HasIndex(r => r.SessionId);
+
+            modelBuilder.Entity<OperationLog>()
+                .HasIndex(l => l.SessionId);
         }
     }
 }

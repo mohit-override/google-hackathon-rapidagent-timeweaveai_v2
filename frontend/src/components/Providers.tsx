@@ -1,7 +1,7 @@
 "use client";
 
 import React, { createContext, useContext, useState, useEffect } from "react";
-import { ReplaySession, TelemetrySpan } from "../types";
+import { ReplaySession, TelemetrySpan, OperationLog } from "../types";
 import { getSignalRConnection, ensureConnection, joinSessionGroup, leaveSessionGroup } from "../lib/signalr";
 import { api } from "../lib/api";
 
@@ -10,6 +10,8 @@ interface AppContextState {
   setSelectedSession: React.Dispatch<React.SetStateAction<ReplaySession | null>>;
   spans: TelemetrySpan[];
   setSpans: React.Dispatch<React.SetStateAction<TelemetrySpan[]>>;
+  logs: OperationLog[];
+  setLogs: React.Dispatch<React.SetStateAction<OperationLog[]>>;
   currentTime: number; // UnixNano timestamp used for the slider
   setCurrentTime: React.Dispatch<React.SetStateAction<number>>;
   minTime: number;
@@ -21,6 +23,7 @@ const AppContext = createContext<AppContextState | undefined>(undefined);
 export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children }) => {
   const [selectedSession, setSelectedSession] = useState<ReplaySession | null>(null);
   const [spans, setSpans] = useState<TelemetrySpan[]>([]);
+  const [logs, setLogs] = useState<OperationLog[]>([]);
   const [currentTime, setCurrentTime] = useState<number>(0);
 
   const minTime = spans.length > 0 ? Math.min(...spans.map(s => s.startTimeUnixNano)) : 0;
@@ -30,12 +33,21 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
   useEffect(() => {
     const conn = getSignalRConnection();
     
-    const handleNewSpan = (spanJson: string) => {
+    const handleNewSpan = (data: any) => {
       try {
-        const span = JSON.parse(spanJson) as TelemetrySpan;
+        const span = typeof data === "string" ? JSON.parse(data) : data;
+        
+        // Ensure id and endTimeUnixNano are populated
+        if (!span.id) {
+          span.id = span.spanId || Math.random().toString();
+        }
+        if (!span.endTimeUnixNano && span.startTimeUnixNano && span.durationMs) {
+          span.endTimeUnixNano = span.startTimeUnixNano + Math.round(span.durationMs * 1000000);
+        }
+
         setSpans(prev => {
-          // avoid duplicates
-          if (prev.find(p => p.id === span.id)) return prev;
+          // avoid duplicates by checking both id and spanId
+          if (prev.find(p => p.id === span.id || p.spanId === span.spanId)) return prev;
           return [...prev, span];
         });
       } catch (err) {
@@ -43,12 +55,28 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
       }
     };
 
+    const handleNewLog = (data: any) => {
+      try {
+        const log = typeof data === "string" ? JSON.parse(data) : data;
+        setLogs(prev => {
+          if (prev.find(l => l.id === log.id)) return prev;
+          return [...prev, log];
+        });
+      } catch (err) {
+        console.error("Failed to parse incoming log", err);
+      }
+    };
+
     conn.on("ReceiveTelemetry", handleNewSpan);
+    conn.on("ReceiveTelemetrySpan", handleNewSpan);
+    conn.on("ReceiveLog", handleNewLog);
 
     ensureConnection().catch(console.error);
 
     return () => {
       conn.off("ReceiveTelemetry", handleNewSpan);
+      conn.off("ReceiveTelemetrySpan", handleNewSpan);
+      conn.off("ReceiveLog", handleNewLog);
     };
   }, []);
 
@@ -65,16 +93,27 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
     };
   }, [selectedSession]);
 
-  // Fetch historical spans when session changes (e.g. on page refresh)
+  // Fetch historical spans & logs when session changes (e.g. on page refresh)
   useEffect(() => {
     if (selectedSession) {
+      // Clear logs first before starting trigger or fetching historical
+      setSpans([]);
+      setLogs([]);
+
       api.getSessionSpans(selectedSession.id)
         .then(fetchedSpans => {
           setSpans(fetchedSpans);
         })
         .catch(console.error);
+
+      api.getSessionLogs(selectedSession.id)
+        .then(fetchedLogs => {
+          setLogs(fetchedLogs);
+        })
+        .catch(console.error);
     } else {
       setSpans([]);
+      setLogs([]);
     }
   }, [selectedSession]);
 
@@ -92,6 +131,8 @@ export const AppProvider: React.FC<{ children: React.ReactNode }> = ({ children 
         setSelectedSession,
         spans,
         setSpans,
+        logs,
+        setLogs,
         currentTime,
         setCurrentTime,
         minTime,

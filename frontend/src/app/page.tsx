@@ -7,6 +7,7 @@ import { TimelineSlider } from "../components/TimelineSlider";
 import { AIAnalysisPanel } from "../components/AIAnalysisPanel";
 import { SimulationPanel } from "../components/SimulationPanel";
 import { ScenarioTrigger } from "../components/ScenarioTrigger";
+import { OperationsConsole } from "../components/OperationsConsole";
 import { useAppContext } from "../components/Providers";
 import { api } from "../lib/api";
 import { Activity } from "lucide-react";
@@ -72,16 +73,21 @@ export default function Home() {
         </div>
 
         {/* Right Area - Visualization */}
-        <div className="flex-1 flex flex-col gap-4 relative">
-          <div className="flex-1 min-h-[400px]">
+        <div className="flex-1 flex flex-col gap-4 relative overflow-y-auto custom-scrollbar pb-10">
+          <div className="min-h-[400px] h-[450px] shrink-0">
             <TopologyGraph 
               spans={spans}
               currentTimeNano={currentTime}
               activeScenario={selectedSession?.scenarioName || ""} 
             />
           </div>
-          <div className="h-24">
+
+          <div className="h-24 shrink-0">
             <TimelineSlider />
+          </div>
+          
+          <div className="shrink-0">
+            <OperationsConsole />
           </div>
         </div>
       </div>

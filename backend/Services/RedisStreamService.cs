@@ -58,7 +58,22 @@ namespace TimeWeave.Backend.Services
             var db = _redis.GetDatabase();
             
             // Start reading from the end of the stream (only new messages)
-            string lastId = "$";
+            string lastId = "0-0";
+            try
+            {
+                if (await db.KeyExistsAsync(StreamKey))
+                {
+                    var info = await db.StreamInfoAsync(StreamKey);
+                    if (info.Length > 0)
+                    {
+                        lastId = info.LastEntry.Id.ToString();
+                    }
+                }
+            }
+            catch (Exception ex)
+            {
+                Console.WriteLine($"[RedisStreamService] Error initializing stream consumer starting ID: {ex.Message}");
+            }
 
             while (!stoppingToken.IsCancellationRequested)
             {
@@ -85,10 +100,12 @@ namespace TimeWeave.Backend.Services
                             
                             double.TryParse(durationMsStr, out double durationMs);
                             long.TryParse(startTimeStr, out long startTimeUnixNano);
+                            long endTimeUnixNano = startTimeUnixNano + (long)(durationMs * 1000000);
 
                             // Stream details to the SignalR group corresponding to the SessionId
                             await _hubContext.Clients.Group(sessionId).SendAsync("ReceiveTelemetrySpan", new
                             {
+                                id = spanId,
                                 sessionId,
                                 traceId,
                                 spanId,
@@ -99,6 +116,7 @@ namespace TimeWeave.Backend.Services
                                 statusCode,
                                 statusMessage,
                                 startTimeUnixNano,
+                                endTimeUnixNano,
                                 attributesJson
                             }, cancellationToken: stoppingToken);
                         }

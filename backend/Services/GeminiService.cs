@@ -13,19 +13,27 @@ namespace TimeWeave.Backend.Services
     {
         private readonly string? _apiKey;
         private readonly HttpClient _httpClient;
+        private readonly LogService _logService;
 
-        public GeminiService(IConfiguration configuration, HttpClient httpClient)
+        public GeminiService(IConfiguration configuration, HttpClient httpClient, LogService logService)
         {
             _apiKey = configuration["GEMINI_API_KEY"];
             _httpClient = httpClient;
+            _logService = logService;
         }
 
         public async Task<string> GenerateRootCauseAnalysisAsync(ReplaySession session, List<TelemetrySpan> spans)
         {
+            await _logService.LogAsync(session.Id, "INFO", "Gemini", "Gemini: Initiating AI Root Cause Analysis report generation...");
+            await _logService.LogAsync(session.Id, "INFO", "Gemini", $"Gemini: Aggregating telemetry traces ({spans.Count} active spans found).");
+
             if (string.IsNullOrWhiteSpace(_apiKey))
             {
+                await _logService.LogAsync(session.Id, "WARNING", "Gemini", "Gemini: API Key is missing. Using high-fidelity mock fallback analysis.");
                 Console.WriteLine("[GeminiService] API Key is missing. Using high-fidelity mock fallback analysis.");
-                return GetMockAnalysis(session.ScenarioName);
+                var mockText = GetMockAnalysis(session.ScenarioName);
+                await _logService.LogAsync(session.Id, "SUCCESS", "Gemini", $"Gemini: Mock analysis retrieved successfully ({mockText.Length} characters of report text).");
+                return mockText;
             }
 
             try
@@ -39,6 +47,8 @@ namespace TimeWeave.Backend.Services
                     sb.AppendLine($"- Service: {s.ServiceName}, Operation: {s.Name}, Status: {s.StatusCode}, Duration: {s.DurationMs}ms, Error: {s.StatusMessage}");
                 }
 
+                await _logService.LogAsync(session.Id, "INFO", "Gemini", "Gemini: Compiling trace dependency graph into LLM prompt template...");
+
                 string prompt = $@"
 You are an expert Reliability Engineer and Incident Commander. Analyze the following distributed system trace timeline and telemetry.
 Determine the root cause, explain how the failure propagated, and write a human-readable incident narration and causal summary.
@@ -51,6 +61,8 @@ Provide your output as a clean, professionally formatted markdown report with th
 3. ### Root Cause Explanation (detail the exact root cause, e.g. cache latency or database connection pool issues)
 4. ### Counterfactual Remediation (suggest what would happen if retries were capped, a circuit breaker was added, etc.)
 ";
+
+                await _logService.LogAsync(session.Id, "INFO", "Gemini", $"Gemini: Invoking Gemini 2.5 Flash API (Model: gemini-2.5-flash) with {prompt.Length} characters of graph context.");
 
                 var requestBody = new
                 {
@@ -68,6 +80,7 @@ Provide your output as a clean, professionally formatted markdown report with th
                     Content = new StringContent(jsonRequest, Encoding.UTF8, "application/json")
                 };
 
+                var startTime = DateTime.UtcNow;
                 var response = await _httpClient.SendAsync(request);
                 response.EnsureSuccessStatusCode();
 
@@ -81,10 +94,14 @@ Provide your output as a clean, professionally formatted markdown report with th
                     .GetProperty("text")
                     .GetString();
 
+                var duration = (DateTime.UtcNow - startTime).TotalSeconds;
+                await _logService.LogAsync(session.Id, "SUCCESS", "Gemini", $"Gemini: API call completed in {duration:F2} seconds. Parsed generated report content ({text?.Length ?? 0} characters).");
+
                 return text ?? "Unable to extract analysis from Gemini response.";
             }
             catch (Exception ex)
             {
+                await _logService.LogAsync(session.Id, "ERROR", "Gemini", $"Gemini Error: API request failed ({ex.Message}). Falling back to mock template analysis.");
                 Console.WriteLine($"[GeminiService] Error calling Gemini API: {ex.Message}. Falling back to mock analysis.");
                 return GetMockAnalysis(session.ScenarioName);
             }

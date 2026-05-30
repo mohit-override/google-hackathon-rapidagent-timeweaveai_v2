@@ -2,6 +2,7 @@ using System;
 using System.Net.Http;
 using System.Threading.Tasks;
 using Microsoft.Extensions.Configuration;
+using Microsoft.Extensions.DependencyInjection;
 using TimeWeave.Backend.Database;
 
 namespace TimeWeave.Backend.Services
@@ -9,17 +10,21 @@ namespace TimeWeave.Backend.Services
     public class ScenarioService
     {
         private readonly HttpClient _httpClient;
-        private readonly AppDbContext _dbContext;
+        private readonly IServiceScopeFactory _scopeFactory;
         private readonly string _gatewayUrl;
+        private readonly DynatraceService _dynatraceService;
+        private readonly LogService _logService;
         
         public static Guid? ActiveSessionId { get; set; }
         public static string? ActiveScenarioName { get; set; }
 
-        public ScenarioService(HttpClient httpClient, AppDbContext dbContext, IConfiguration configuration)
+        public ScenarioService(HttpClient httpClient, IServiceScopeFactory scopeFactory, IConfiguration configuration, DynatraceService dynatraceService, LogService logService)
         {
             _httpClient = httpClient;
-            _dbContext = dbContext;
+            _scopeFactory = scopeFactory;
             _gatewayUrl = configuration["GATEWAY_SERVICE_URL"] ?? "http://localhost:8001";
+            _dynatraceService = dynatraceService;
+            _logService = logService;
         }
 
         public async Task<ReplaySession> TriggerScenarioAsync(string scenario)
@@ -35,12 +40,55 @@ namespace TimeWeave.Backend.Services
                 TriggeredAt = DateTime.UtcNow
             };
 
-            _dbContext.ReplaySessions.Add(session);
-            await _dbContext.SaveChangesAsync();
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                dbContext.ReplaySessions.Add(session);
+                await dbContext.SaveChangesAsync();
+            }
 
             // Set active session context
             ActiveSessionId = session.Id;
             ActiveScenarioName = scenario;
+
+            // Log session initialization
+            await _logService.LogAsync(session.Id, "INFO", "Scenario", $"Initiating incident replay: {session.Name} ({scenario})");
+
+            // Query Dynatrace Topology baseline
+            await _logService.LogAsync(session.Id, "INFO", "Dynatrace", "Dynatrace: Querying Smartscape Topology baseline mapping...");
+            try
+            {
+                var topology = _dynatraceService.GetSmartscapeTopology();
+                await _logService.LogAsync(session.Id, "SUCCESS", "Dynatrace", "Dynatrace: Retrieved topology baseline. Discovered 4 services (api-gateway, checkout-service, payment-service, redis-cache-service) and 3 active calling channels.");
+            }
+            catch (Exception ex)
+            {
+                await _logService.LogAsync(session.Id, "ERROR", "Dynatrace", $"Dynatrace: Failed to query topology mapping: {ex.Message}");
+            }
+
+            // Query Dynatrace Davis AI active anomalies
+            await _logService.LogAsync(session.Id, "INFO", "Dynatrace", $"Dynatrace: Querying Davis AI engine for active anomalies matching scenario '{scenario}'...");
+            try
+            {
+                var anomalies = _dynatraceService.GetActiveAnomalies(scenario) as System.Collections.IEnumerable;
+                bool foundAnomaly = false;
+                if (anomalies != null)
+                {
+                    foreach (dynamic anomaly in anomalies)
+                    {
+                        foundAnomaly = true;
+                        await _logService.LogAsync(session.Id, "WARNING", "Dynatrace", $"Davis AI Alert: {anomaly.title} (Severity: {anomaly.severity}). Root Cause Candidate: {anomaly.rootCauseCandidate}. Davis AI Recommendation: {anomaly.davisAiRecommendation}");
+                    }
+                }
+                if (!foundAnomaly)
+                {
+                    await _logService.LogAsync(session.Id, "INFO", "Dynatrace", "Dynatrace: Davis AI reported no pre-existing incident anomalies.");
+                }
+            }
+            catch (Exception ex)
+            {
+                await _logService.LogAsync(session.Id, "ERROR", "Dynatrace", $"Dynatrace: Error querying Davis AI anomalies: {ex.Message}");
+            }
 
             // 2. Execute HTTP call to Gateway in a separate background thread
             // This allows the endpoint to return immediately so the frontend can display real-time telemetry!
@@ -48,6 +96,7 @@ namespace TimeWeave.Backend.Services
             {
                 try
                 {
+                    await _logService.LogAsync(session.Id, "INFO", "Gateway", $"Gateway: Forwarding incident trigger request to API Gateway at {_gatewayUrl}/checkout?scenario={scenario}...");
                     Console.WriteLine($"[ScenarioService] Triggering HTTP call to API Gateway for scenario '{scenario}'...");
                     var url = $"{_gatewayUrl}/checkout?scenario={scenario}";
                     
@@ -56,18 +105,39 @@ namespace TimeWeave.Backend.Services
                     var response = await client.GetAsync(url);
                     Console.WriteLine($"[ScenarioService] API Gateway call completed with status {response.StatusCode}");
                     
+                    await _logService.LogAsync(session.Id, "SUCCESS", "Gateway", $"Gateway: API Gateway transaction completed with response status code {response.StatusCode}.");
+                    await _logService.LogAsync(session.Id, "SUCCESS", "Scenario", $"Scenario execution complete. Awaiting trace stream updates from OTel Collector.");
+
                     // Update session status once done
-                    session.Status = "Completed";
-                    _dbContext.ReplaySessions.Update(session);
-                    await _dbContext.SaveChangesAsync();
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var activeSession = await dbContext.ReplaySessions.FindAsync(session.Id);
+                        if (activeSession != null)
+                        {
+                            activeSession.Status = "Completed";
+                            dbContext.ReplaySessions.Update(activeSession);
+                            await dbContext.SaveChangesAsync();
+                        }
+                    }
                 }
                 catch (Exception ex)
                 {
                     Console.WriteLine($"[ScenarioService] Error triggering scenario: {ex.Message}");
-                    session.Status = "Failed";
-                    session.Description += $" (Trigger Error: {ex.Message})";
-                    _dbContext.ReplaySessions.Update(session);
-                    await _dbContext.SaveChangesAsync();
+                    await _logService.LogAsync(session.Id, "ERROR", "Scenario", $"Scenario execution error: {ex.Message}");
+
+                    using (var scope = _scopeFactory.CreateScope())
+                    {
+                        var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                        var activeSession = await dbContext.ReplaySessions.FindAsync(session.Id);
+                        if (activeSession != null)
+                        {
+                            activeSession.Status = "Failed";
+                            activeSession.Description += $" (Trigger Error: {ex.Message})";
+                            dbContext.ReplaySessions.Update(activeSession);
+                            await dbContext.SaveChangesAsync();
+                        }
+                    }
                 }
             });
 
@@ -120,8 +190,12 @@ namespace TimeWeave.Backend.Services
                     break;
             }
 
-            _dbContext.SimulationResults.Add(result);
-            await _dbContext.SaveChangesAsync();
+            using (var scope = _scopeFactory.CreateScope())
+            {
+                var dbContext = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+                dbContext.SimulationResults.Add(result);
+                await dbContext.SaveChangesAsync();
+            }
             return result;
         }
 

@@ -13,6 +13,11 @@ exporters:
   otlphttp/backend:
     endpoint: "http://backend:5000"
     encoding: json
+    compression: none
+  otlphttp/dynatrace:
+    endpoint: "${env:DYNATRACE_API_URL}/api/v2/otlp"
+    headers:
+      Authorization: "Api-Token ${env:DYNATRACE_API_TOKEN}"
   logging:
     verbosity: normal
 
@@ -21,4 +26,4 @@ service:
     traces:
       receivers: [otlp]
       processors: [batch]
-      exporters: [otlphttp/backend, logging]
+      exporters: [otlphttp/backend, otlphttp/dynatrace, logging]

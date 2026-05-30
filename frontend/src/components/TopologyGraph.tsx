@@ -1,6 +1,6 @@
 "use client";
 
-import React, { useMemo } from "react";
+import React, { useMemo, useState, useEffect } from "react";
 import { ReactFlow, Background, Handle, Position, Node, Edge } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
 
@@ -78,6 +78,16 @@ interface TopologyGraphProps {
 }
 
 export default function TopologyGraph({ spans, currentTimeNano, activeScenario }: TopologyGraphProps) {
+  const [reactFlowInstance, setReactFlowInstance] = useState<any>(null);
+
+  useEffect(() => {
+    if (reactFlowInstance) {
+      setTimeout(() => {
+        reactFlowInstance.fitView({ padding: 0.2 });
+      }, 50);
+    }
+  }, [activeScenario, reactFlowInstance]);
+
   // Compute states of services based on spans before and at the current playhead
   const serviceData = useMemo(() => {
     const states: Record<
@@ -122,23 +132,37 @@ export default function TopologyGraph({ spans, currentTimeNano, activeScenario }
         return s.startTimeUnixNano <= currentTimeNano && currentTimeNano <= endTimeNano;
       });
 
-      const primarySpan = activeSpan || serviceSpans[serviceSpans.length - 1];
+      if (activeSpan) {
+        // If it's active, determine the duration/latency in progress up to the playhead
+        const elapsedMs = (currentTimeNano - activeSpan.startTimeUnixNano) / 1000000;
+        states[service].latency = elapsedMs > 0 ? elapsedMs : 0;
 
-      if (primarySpan) {
-        states[service].latency = primarySpan.durationMs;
+        // Check if a child call within this request has already thrown an error up to this timestamp
+        const hasChildError = pastSpans.some(s => 
+          s.parentSpanId === activeSpan.spanId && 
+          s.statusCode === "ERROR" && 
+          s.startTimeUnixNano <= currentTimeNano
+        );
 
-        // Determine Status
-        if (primarySpan.statusCode === "ERROR") {
+        if (hasChildError) {
           states[service].status = "ERROR";
           states[service].errorRate = 100;
         } else if (
-          (service === "redis-cache-service" && primarySpan.durationMs > 1000) ||
-          (service === "payment-service" && primarySpan.durationMs > 2000) ||
-          (service === "checkout-service" && primarySpan.durationMs > 2500)
+          (service === "redis-cache-service" && elapsedMs > 1000) ||
+          (service === "payment-service" && elapsedMs > 2000) ||
+          (service === "checkout-service" && elapsedMs > 2500)
         ) {
           states[service].status = "LATENCY";
-        } else if (activeSpan) {
+        } else {
           states[service].status = "RUNNING";
+        }
+      } else {
+        // Span has completed
+        const lastSpan = serviceSpans[serviceSpans.length - 1];
+        states[service].latency = lastSpan.durationMs;
+        if (lastSpan.statusCode === "ERROR") {
+          states[service].status = "ERROR";
+          states[service].errorRate = 100;
         } else {
           states[service].status = "OK";
         }
@@ -316,8 +340,7 @@ export default function TopologyGraph({ spans, currentTimeNano, activeScenario }
         nodes={nodes}
         edges={edges}
         nodeTypes={nodeTypes}
-        fitView
-        fitViewOptions={{ padding: 0.2 }}
+        onInit={setReactFlowInstance}
         nodesConnectable={false}
         nodesDraggable={false}
         zoomOnScroll={false}

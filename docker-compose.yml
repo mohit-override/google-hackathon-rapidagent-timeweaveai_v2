@@ -31,6 +31,9 @@ services:
     image: otel/opentelemetry-collector-contrib:0.95.0
     container_name: timeweave-otel-collector
     command: ["--config=/etc/otel-collector-config.yaml"]
+    environment:
+      - DYNATRACE_API_URL=${DYNATRACE_API_URL:-}
+      - DYNATRACE_API_TOKEN=${DYNATRACE_API_TOKEN:-}
     volumes:
       - ./otel-collector-config.yaml:/etc/otel-collector-config.yaml
     ports:
